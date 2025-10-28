@@ -1,0 +1,1266 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>UP Hatfield 3D Campus — Fixed</title>
+
+  <script src="https://cesium.com/downloads/cesiumjs/releases/1.120/Build/Cesium/Cesium.js"></script>
+  <link href="https://cesium.com/downloads/cesiumjs/releases/1.120/Build/Cesium/Widgets/widgets.css" rel="stylesheet"/>
+
+  <style>
+    html, body, #cesiumContainer { width:100%; height:100%; margin:0; padding:0; background:#000; }
+    #appHeader { position:absolute; top:0; left:0; right:0; height:48px; background:rgba(25,25,25,0.9); color:#fff; display:flex; align-items:center; padding:0 10px; z-index:1000; }
+    #headerButtons button { margin-left:8px; background:#444; color:#fff; border:none; padding:6px 10px; border-radius:4px; cursor:pointer; }
+    #attrPanel { position:absolute; top:60px; right:10px; background:rgba(255,255,255,0.95); padding:10px; border-radius:6px; box-shadow:0 2px 6px rgba(0,0,0,0.3); min-width:240px; z-index:999; display:none; }
+  </style>
+</head>
+<body>
+  <header id="appHeader">
+    <div><strong>GMT320 — UP Hatfield 3D Campus</strong></div>
+    <div id="headerButtons" style="margin-left:auto;">
+      <button id="btnZoom">Zoom to Campus</button>
+      <button id="btnHide">Toggle Tileset</button>
+      <button id="btnFood">Toggle Food Sources</button>
+      <button id="btnNearest">Nearest Stall</button>
+    </div>
+  </header>
+
+  <div id="cesiumContainer"></div>
+  <div id="attrPanel"></div>
+
+  <script type="module">
+  (async function() {
+    // -------------------------
+    // 1) Token + viewer
+    // -------------------------
+    Cesium.Ion.defaultAccessToken = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiI2MTQ4MGQ4Zi01NDU1LTRmMzktYTAwYy01ZmUxOWRjNDA0ODAiLCJpZCI6MzU0ODMzLCJpYXQiOjE3NjE2NTg3NDN9.Zj6MCsc5o0OUgnMHODU2tU_DIkNAImCGbN-Kgb2Bmjs";
+
+    const viewer = new Cesium.Viewer("cesiumContainer", {
+      terrain: Cesium.Terrain.fromWorldTerrain(),
+      shadows: true,
+      timeline: false,
+      animation: false,
+      baseLayerPicker: true
+    });
+    viewer.scene.globe.enableLighting = true;
+    viewer.shadows = true;
+
+    // -------------------------
+    // 2) Target location (UP Hatfield)
+    // -------------------------
+    const targetLon = 28.2314;
+    const targetLat = -25.7550;
+    const targetHeight = 0; // set desired height (metres above ellipsoid). try 0 initially.
+
+    // Tile asset id (from your Ion). Confirm this is the correct ID for the uploaded tileset.
+    const ION_TILESET_ASSET_ID = 3976208;
+
+    // -------------------------
+    // 3) Load tileset (3D Tiles)
+    // -------------------------
+    let tileset;
+    try {
+      tileset = await Cesium.Cesium3DTileset.fromIonAssetId(ION_TILESET_ASSET_ID);
+      viewer.scene.primitives.add(tileset);
+      await tileset.readyPromise;
+    } catch (err) {
+      console.error("Tileset load error:", err);
+      alert("Failed to load tileset from Ion. Check console for details.");
+      return;
+    }
+
+    // -------------------------
+    // 4) Compute translation to desired lon/lat/height
+    //    We take the tileset boundingSphere center (in world Cartesian),
+    //    compute the Cartesian target position for desired lon/lat/height,
+    //    and translate the tileset by (target - currentCenter).
+    // -------------------------
+    const bsCenter = tileset.boundingSphere.center; // Cartesian3 in world coordinates
+    const bsCartographic = Cesium.Cartographic.fromCartesian(bsCenter);
+
+    const currentLonDeg  = Cesium.Math.toDegrees(bsCartographic.longitude);
+    const currentLatDeg  = Cesium.Math.toDegrees(bsCartographic.latitude);
+    const currentHeightM = bsCartographic.height;
+
+    console.log("Tileset boundingSphere center (lon, lat, h):",
+      currentLonDeg.toFixed(6), currentLatDeg.toFixed(6), currentHeightM.toFixed(3));
+
+    // Cartesian target for desired lon/lat/height
+    const targetCartesian = Cesium.Cartesian3.fromDegrees(targetLon, targetLat, targetHeight);
+
+    // Compute translation vector: target - currentCenter
+    const translation = new Cesium.Cartesian3();
+    Cesium.Cartesian3.subtract(targetCartesian, bsCenter, translation);
+
+    console.log("Translation vector (meters):", translation);
+
+    // Create a clone of existing modelMatrix (preserve rotation/scale)
+    const oldMatrix = tileset.modelMatrix ? Cesium.Matrix4.clone(tileset.modelMatrix) : Cesium.Matrix4.IDENTITY;
+    // Apply translation by multiplying with translation matrix
+    const translationMatrix = Cesium.Matrix4.fromTranslation(translation);
+    const newMatrix = Cesium.Matrix4.multiply(translationMatrix, oldMatrix, new Cesium.Matrix4());
+    tileset.modelMatrix = newMatrix;
+
+    // Log result: where the tileset center is now (should match target)
+    const newCenterCartesian = Cesium.Matrix4.multiplyByPoint(tileset.modelMatrix, bsCenter, new Cesium.Cartesian3());
+    const newCenterCarto = Cesium.Cartographic.fromCartesian(newCenterCartesian);
+    console.log("New tileset center (lon,lat,h):",
+      Cesium.Math.toDegrees(newCenterCarto.longitude).toFixed(6),
+      Cesium.Math.toDegrees(newCenterCarto.latitude).toFixed(6),
+      newCenterCarto.height.toFixed(3));
+
+    // -------------------------
+    // 5) Fly camera to tileset (nice offset)
+    // -------------------------
+    viewer.flyTo(tileset, { offset: new Cesium.HeadingPitchRange(0, -0.6, 450) });
+
+    // -------------------------
+    // 6) Add simple student features (food stalls)
+    // -------------------------
+    const foodStalls = [
+      { name: "Food Stall – Aula", lon: 28.2318, lat: -25.7547, hours: "Mon–Fri 10:00–16:00", acceptsDonations: true },
+      { name: "Food Stall – Merensky Library", lon: 28.2299, lat: -25.7542, hours: "Mon–Fri 11:00–15:00", acceptsDonations: true },
+      { name: "Donation Point – Geography", lon: 28.2296, lat: -25.7557, hours: "Mon–Fri 08:00–17:00", acceptsDonations: true }
+    ];
+    let foodEntities = [], foodLayerVisible = false;
+    const pinImg = "data:image/svg+xml;utf8," + encodeURIComponent(`<svg xmlns='http://www.w3.org/2000/svg' width='48' height='48' viewBox='0 0 24 24' fill='red'><path d='M12 2C8.14 2 5 5.14 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.86-3.14-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5S10.62 6.5 12 6.5s2.5 1.12 2.5 2.5S13.38 11.5 12 11.5z'/></svg>`);
+    function addFoodLayer() {
+      if (foodEntities.length) return;
+      for (const s of foodStalls) {
+        const e = viewer.entities.add({
+          position: Cesium.Cartesian3.fromDegrees(s.lon, s.lat, 1),
+          billboard: {
+            image: pinImg,
+            verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
+            heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+            scale: 0.8
+          },
+          label: {
+            text: s.name,
+            font: "12px Segoe UI",
+            pixelOffset: new Cesium.Cartesian2(0, -35),
+            disableDepthTestDistance: Number.POSITIVE_INFINITY
+          },
+          properties: s
+        });
+        foodEntities.push(e);
+      }
+    }
+    function removeFoodLayer() { for (const e of foodEntities) viewer.entities.remove(e); foodEntities=[]; }
+
+    document.getElementById("btnFood").onclick = () => { foodLayerVisible = !foodLayerVisible; foodLayerVisible ? addFoodLayer() : removeFoodLayer(); };
+
+    document.getElementById("btnNearest").onclick = () => {
+      if (!foodEntities.length) addFoodLayer();
+      const origin = Cesium.Cartographic.fromDegrees(targetLon, targetLat);
+      let best=null, bestDist=1e12;
+      for (const e of foodEntities) {
+        const c = Cesium.Cartographic.fromCartesian(e.position.getValue(Cesium.JulianDate.now()));
+        const dx = (c.longitude - origin.longitude) * 6378137 * Math.cos((origin.latitude + c.latitude)/2);
+        const dy = (c.latitude - origin.latitude) * 6378137;
+        const d = Math.hypot(dx, dy);
+        if (d < bestDist) { bestDist=d; best=e; }
+      }
+      if (best) {
+        viewer.flyTo(best, { duration: 1.2 });
+        const p = best.properties.getValue(Cesium.JulianDate.now());
+        const panel = document.getElementById("attrPanel");
+        panel.innerHTML = `<strong>${p.name}</strong><br/>Hours: ${p.hours}<br/>Donations: ${p.acceptsDonations ? "Yes" : "No"}<br/><em>≈ ${Math.round(bestDist)} m away</em>`;
+        panel.style.display = "block";
+      }
+    };
+
+    // Toggle tileset
+    document.getElementById("btnHide").onclick = () => { tileset.show = !tileset.show; };
+
+    // Zoom to campus button
+    document.getElementById("btnZoom").onclick = () => { viewer.flyTo(tileset, { offset: new Cesium.HeadingPitchRange(0, -0.6, 300) }); };
+
+    // Click handler: entities + tileset feature fallback
+    const handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
+    handler.setInputAction(function(click) {
+      const picked = viewer.scene.pick(click.position);
+      const panel = document.getElementById("attrPanel");
+      if (!Cesium.defined(picked)) { panel.style.display='none'; return; }
+
+      // entity pick (food pins etc)
+      if (Cesium.defined(picked.id) && picked.id.properties) {
+        const p = picked.id.properties.getValue(Cesium.JulianDate.now());
+        panel.innerHTML = `<strong>${p.name || picked.id.name}</strong><br/>${p.hours ? "Hours: "+p.hours+"<br/>":""}${p.acceptsDonations ? "Accepts donations":""}`;
+        panel.style.display = 'block';
+        return;
+      }
+
+      // Try tileset feature pick (3D Tiles)
+      if (picked && picked.getProperty) {
+        try {
+          const propName = picked.getProperty('name') || picked.getProperty('Name') || picked.getProperty('buildingName');
+          panel.innerHTML = `<strong>${propName || 'Tileset Feature'}</strong>`;
+          panel.style.display = 'block';
+          return;
+        } catch(e) { /* ignore */ }
+      }
+
+      panel.style.display='none';
+    }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+
+    console.log("Tileset and alignment process complete. Check logs above for current vs target coordinates.");
+  })();
+  </script>
+</body>
+</html>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>UP Hatfield 3D Campus — Fixed</title>
+
+  <script src="https://cesium.com/downloads/cesiumjs/releases/1.120/Build/Cesium/Cesium.js"></script>
+  <link href="https://cesium.com/downloads/cesiumjs/releases/1.120/Build/Cesium/Widgets/widgets.css" rel="stylesheet"/>
+
+  <style>
+    html, body, #cesiumContainer { width:100%; height:100%; margin:0; padding:0; background:#000; }
+    #appHeader { position:absolute; top:0; left:0; right:0; height:48px; background:rgba(25,25,25,0.9); color:#fff; display:flex; align-items:center; padding:0 10px; z-index:1000; }
+    #headerButtons button { margin-left:8px; background:#444; color:#fff; border:none; padding:6px 10px; border-radius:4px; cursor:pointer; }
+    #attrPanel { position:absolute; top:60px; right:10px; background:rgba(255,255,255,0.95); padding:10px; border-radius:6px; box-shadow:0 2px 6px rgba(0,0,0,0.3); min-width:240px; z-index:999; display:none; }
+  </style>
+</head>
+<body>
+  <header id="appHeader">
+    <div><strong>GMT320 — UP Hatfield 3D Campus</strong></div>
+    <div id="headerButtons" style="margin-left:auto;">
+      <button id="btnZoom">Zoom to Campus</button>
+      <button id="btnHide">Toggle Tileset</button>
+      <button id="btnFood">Toggle Food Sources</button>
+      <button id="btnNearest">Nearest Stall</button>
+    </div>
+  </header>
+
+  <div id="cesiumContainer"></div>
+  <div id="attrPanel"></div>
+
+  <script type="module">
+  (async function() {
+    // -------------------------
+    // 1) Token + viewer
+    // -------------------------
+    Cesium.Ion.defaultAccessToken = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiI2MTQ4MGQ4Zi01NDU1LTRmMzktYTAwYy01ZmUxOWRjNDA0ODAiLCJpZCI6MzU0ODMzLCJpYXQiOjE3NjE2NTg3NDN9.Zj6MCsc5o0OUgnMHODU2tU_DIkNAImCGbN-Kgb2Bmjs";
+
+    const viewer = new Cesium.Viewer("cesiumContainer", {
+      terrain: Cesium.Terrain.fromWorldTerrain(),
+      shadows: true,
+      timeline: false,
+      animation: false,
+      baseLayerPicker: true
+    });
+    viewer.scene.globe.enableLighting = true;
+    viewer.shadows = true;
+
+    // -------------------------
+    // 2) Target location (UP Hatfield)
+    // -------------------------
+    const targetLon = 28.2314;
+    const targetLat = -25.7550;
+    const targetHeight = 0; // set desired height (metres above ellipsoid). try 0 initially.
+
+    // Tile asset id (from your Ion). Confirm this is the correct ID for the uploaded tileset.
+    const ION_TILESET_ASSET_ID = 3976208;
+
+    // -------------------------
+    // 3) Load tileset (3D Tiles)
+    // -------------------------
+    let tileset;
+    try {
+      tileset = await Cesium.Cesium3DTileset.fromIonAssetId(ION_TILESET_ASSET_ID);
+      viewer.scene.primitives.add(tileset);
+      await tileset.readyPromise;
+    } catch (err) {
+      console.error("Tileset load error:", err);
+      alert("Failed to load tileset from Ion. Check console for details.");
+      return;
+    }
+
+    // -------------------------
+    // 4) Compute translation to desired lon/lat/height
+    //    We take the tileset boundingSphere center (in world Cartesian),
+    //    compute the Cartesian target position for desired lon/lat/height,
+    //    and translate the tileset by (target - currentCenter).
+    // -------------------------
+    const bsCenter = tileset.boundingSphere.center; // Cartesian3 in world coordinates
+    const bsCartographic = Cesium.Cartographic.fromCartesian(bsCenter);
+
+    const currentLonDeg  = Cesium.Math.toDegrees(bsCartographic.longitude);
+    const currentLatDeg  = Cesium.Math.toDegrees(bsCartographic.latitude);
+    const currentHeightM = bsCartographic.height;
+
+    console.log("Tileset boundingSphere center (lon, lat, h):",
+      currentLonDeg.toFixed(6), currentLatDeg.toFixed(6), currentHeightM.toFixed(3));
+
+    // Cartesian target for desired lon/lat/height
+    const targetCartesian = Cesium.Cartesian3.fromDegrees(targetLon, targetLat, targetHeight);
+
+    // Compute translation vector: target - currentCenter
+    const translation = new Cesium.Cartesian3();
+    Cesium.Cartesian3.subtract(targetCartesian, bsCenter, translation);
+
+    console.log("Translation vector (meters):", translation);
+
+    // Create a clone of existing modelMatrix (preserve rotation/scale)
+    const oldMatrix = tileset.modelMatrix ? Cesium.Matrix4.clone(tileset.modelMatrix) : Cesium.Matrix4.IDENTITY;
+    // Apply translation by multiplying with translation matrix
+    const translationMatrix = Cesium.Matrix4.fromTranslation(translation);
+    const newMatrix = Cesium.Matrix4.multiply(translationMatrix, oldMatrix, new Cesium.Matrix4());
+    tileset.modelMatrix = newMatrix;
+
+    // Log result: where the tileset center is now (should match target)
+    const newCenterCartesian = Cesium.Matrix4.multiplyByPoint(tileset.modelMatrix, bsCenter, new Cesium.Cartesian3());
+    const newCenterCarto = Cesium.Cartographic.fromCartesian(newCenterCartesian);
+    console.log("New tileset center (lon,lat,h):",
+      Cesium.Math.toDegrees(newCenterCarto.longitude).toFixed(6),
+      Cesium.Math.toDegrees(newCenterCarto.latitude).toFixed(6),
+      newCenterCarto.height.toFixed(3));
+
+    // -------------------------
+    // 5) Fly camera to tileset (nice offset)
+    // -------------------------
+    viewer.flyTo(tileset, { offset: new Cesium.HeadingPitchRange(0, -0.6, 450) });
+
+    // -------------------------
+    // 6) Add simple student features (food stalls)
+    // -------------------------
+    const foodStalls = [
+      { name: "Food Stall – Aula", lon: 28.2318, lat: -25.7547, hours: "Mon–Fri 10:00–16:00", acceptsDonations: true },
+      { name: "Food Stall – Merensky Library", lon: 28.2299, lat: -25.7542, hours: "Mon–Fri 11:00–15:00", acceptsDonations: true },
+      { name: "Donation Point – Geography", lon: 28.2296, lat: -25.7557, hours: "Mon–Fri 08:00–17:00", acceptsDonations: true }
+    ];
+    let foodEntities = [], foodLayerVisible = false;
+    const pinImg = "data:image/svg+xml;utf8," + encodeURIComponent(`<svg xmlns='http://www.w3.org/2000/svg' width='48' height='48' viewBox='0 0 24 24' fill='red'><path d='M12 2C8.14 2 5 5.14 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.86-3.14-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5S10.62 6.5 12 6.5s2.5 1.12 2.5 2.5S13.38 11.5 12 11.5z'/></svg>`);
+    function addFoodLayer() {
+      if (foodEntities.length) return;
+      for (const s of foodStalls) {
+        const e = viewer.entities.add({
+          position: Cesium.Cartesian3.fromDegrees(s.lon, s.lat, 1),
+          billboard: {
+            image: pinImg,
+            verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
+            heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+            scale: 0.8
+          },
+          label: {
+            text: s.name,
+            font: "12px Segoe UI",
+            pixelOffset: new Cesium.Cartesian2(0, -35),
+            disableDepthTestDistance: Number.POSITIVE_INFINITY
+          },
+          properties: s
+        });
+        foodEntities.push(e);
+      }
+    }
+    function removeFoodLayer() { for (const e of foodEntities) viewer.entities.remove(e); foodEntities=[]; }
+
+    document.getElementById("btnFood").onclick = () => { foodLayerVisible = !foodLayerVisible; foodLayerVisible ? addFoodLayer() : removeFoodLayer(); };
+
+    document.getElementById("btnNearest").onclick = () => {
+      if (!foodEntities.length) addFoodLayer();
+      const origin = Cesium.Cartographic.fromDegrees(targetLon, targetLat);
+      let best=null, bestDist=1e12;
+      for (const e of foodEntities) {
+        const c = Cesium.Cartographic.fromCartesian(e.position.getValue(Cesium.JulianDate.now()));
+        const dx = (c.longitude - origin.longitude) * 6378137 * Math.cos((origin.latitude + c.latitude)/2);
+        const dy = (c.latitude - origin.latitude) * 6378137;
+        const d = Math.hypot(dx, dy);
+        if (d < bestDist) { bestDist=d; best=e; }
+      }
+      if (best) {
+        viewer.flyTo(best, { duration: 1.2 });
+        const p = best.properties.getValue(Cesium.JulianDate.now());
+        const panel = document.getElementById("attrPanel");
+        panel.innerHTML = `<strong>${p.name}</strong><br/>Hours: ${p.hours}<br/>Donations: ${p.acceptsDonations ? "Yes" : "No"}<br/><em>≈ ${Math.round(bestDist)} m away</em>`;
+        panel.style.display = "block";
+      }
+    };
+
+    // Toggle tileset
+    document.getElementById("btnHide").onclick = () => { tileset.show = !tileset.show; };
+
+    // Zoom to campus button
+    document.getElementById("btnZoom").onclick = () => { viewer.flyTo(tileset, { offset: new Cesium.HeadingPitchRange(0, -0.6, 300) }); };
+
+    // Click handler: entities + tileset feature fallback
+    const handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
+    handler.setInputAction(function(click) {
+      const picked = viewer.scene.pick(click.position);
+      const panel = document.getElementById("attrPanel");
+      if (!Cesium.defined(picked)) { panel.style.display='none'; return; }
+
+      // entity pick (food pins etc)
+      if (Cesium.defined(picked.id) && picked.id.properties) {
+        const p = picked.id.properties.getValue(Cesium.JulianDate.now());
+        panel.innerHTML = `<strong>${p.name || picked.id.name}</strong><br/>${p.hours ? "Hours: "+p.hours+"<br/>":""}${p.acceptsDonations ? "Accepts donations":""}`;
+        panel.style.display = 'block';
+        return;
+      }
+
+      // Try tileset feature pick (3D Tiles)
+      if (picked && picked.getProperty) {
+        try {
+          const propName = picked.getProperty('name') || picked.getProperty('Name') || picked.getProperty('buildingName');
+          panel.innerHTML = `<strong>${propName || 'Tileset Feature'}</strong>`;
+          panel.style.display = 'block';
+          return;
+        } catch(e) { /* ignore */ }
+      }
+
+      panel.style.display='none';
+    }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+
+    console.log("Tileset and alignment process complete. Check logs above for current vs target coordinates.");
+  })();
+  </script>
+</body>
+</html>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>UP Hatfield 3D Campus — Fixed</title>
+
+  <script src="https://cesium.com/downloads/cesiumjs/releases/1.120/Build/Cesium/Cesium.js"></script>
+  <link href="https://cesium.com/downloads/cesiumjs/releases/1.120/Build/Cesium/Widgets/widgets.css" rel="stylesheet"/>
+
+  <style>
+    html, body, #cesiumContainer { width:100%; height:100%; margin:0; padding:0; background:#000; }
+    #appHeader { position:absolute; top:0; left:0; right:0; height:48px; background:rgba(25,25,25,0.9); color:#fff; display:flex; align-items:center; padding:0 10px; z-index:1000; }
+    #headerButtons button { margin-left:8px; background:#444; color:#fff; border:none; padding:6px 10px; border-radius:4px; cursor:pointer; }
+    #attrPanel { position:absolute; top:60px; right:10px; background:rgba(255,255,255,0.95); padding:10px; border-radius:6px; box-shadow:0 2px 6px rgba(0,0,0,0.3); min-width:240px; z-index:999; display:none; }
+  </style>
+</head>
+<body>
+  <header id="appHeader">
+    <div><strong>GMT320 — UP Hatfield 3D Campus</strong></div>
+    <div id="headerButtons" style="margin-left:auto;">
+      <button id="btnZoom">Zoom to Campus</button>
+      <button id="btnHide">Toggle Tileset</button>
+      <button id="btnFood">Toggle Food Sources</button>
+      <button id="btnNearest">Nearest Stall</button>
+    </div>
+  </header>
+
+  <div id="cesiumContainer"></div>
+  <div id="attrPanel"></div>
+
+  <script type="module">
+  (async function() {
+    // -------------------------
+    // 1) Token + viewer
+    // -------------------------
+    Cesium.Ion.defaultAccessToken = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiI2MTQ4MGQ4Zi01NDU1LTRmMzktYTAwYy01ZmUxOWRjNDA0ODAiLCJpZCI6MzU0ODMzLCJpYXQiOjE3NjE2NTg3NDN9.Zj6MCsc5o0OUgnMHODU2tU_DIkNAImCGbN-Kgb2Bmjs";
+
+    const viewer = new Cesium.Viewer("cesiumContainer", {
+      terrain: Cesium.Terrain.fromWorldTerrain(),
+      shadows: true,
+      timeline: false,
+      animation: false,
+      baseLayerPicker: true
+    });
+    viewer.scene.globe.enableLighting = true;
+    viewer.shadows = true;
+
+    // -------------------------
+    // 2) Target location (UP Hatfield)
+    // -------------------------
+    const targetLon = 28.2314;
+    const targetLat = -25.7550;
+    const targetHeight = 0; // set desired height (metres above ellipsoid). try 0 initially.
+
+    // Tile asset id (from your Ion). Confirm this is the correct ID for the uploaded tileset.
+    const ION_TILESET_ASSET_ID = 3976208;
+
+    // -------------------------
+    // 3) Load tileset (3D Tiles)
+    // -------------------------
+    let tileset;
+    try {
+      tileset = await Cesium.Cesium3DTileset.fromIonAssetId(ION_TILESET_ASSET_ID);
+      viewer.scene.primitives.add(tileset);
+      await tileset.readyPromise;
+    } catch (err) {
+      console.error("Tileset load error:", err);
+      alert("Failed to load tileset from Ion. Check console for details.");
+      return;
+    }
+
+    // -------------------------
+    // 4) Compute translation to desired lon/lat/height
+    //    We take the tileset boundingSphere center (in world Cartesian),
+    //    compute the Cartesian target position for desired lon/lat/height,
+    //    and translate the tileset by (target - currentCenter).
+    // -------------------------
+    const bsCenter = tileset.boundingSphere.center; // Cartesian3 in world coordinates
+    const bsCartographic = Cesium.Cartographic.fromCartesian(bsCenter);
+
+    const currentLonDeg  = Cesium.Math.toDegrees(bsCartographic.longitude);
+    const currentLatDeg  = Cesium.Math.toDegrees(bsCartographic.latitude);
+    const currentHeightM = bsCartographic.height;
+
+    console.log("Tileset boundingSphere center (lon, lat, h):",
+      currentLonDeg.toFixed(6), currentLatDeg.toFixed(6), currentHeightM.toFixed(3));
+
+    // Cartesian target for desired lon/lat/height
+    const targetCartesian = Cesium.Cartesian3.fromDegrees(targetLon, targetLat, targetHeight);
+
+    // Compute translation vector: target - currentCenter
+    const translation = new Cesium.Cartesian3();
+    Cesium.Cartesian3.subtract(targetCartesian, bsCenter, translation);
+
+    console.log("Translation vector (meters):", translation);
+
+    // Create a clone of existing modelMatrix (preserve rotation/scale)
+    const oldMatrix = tileset.modelMatrix ? Cesium.Matrix4.clone(tileset.modelMatrix) : Cesium.Matrix4.IDENTITY;
+    // Apply translation by multiplying with translation matrix
+    const translationMatrix = Cesium.Matrix4.fromTranslation(translation);
+    const newMatrix = Cesium.Matrix4.multiply(translationMatrix, oldMatrix, new Cesium.Matrix4());
+    tileset.modelMatrix = newMatrix;
+
+    // Log result: where the tileset center is now (should match target)
+    const newCenterCartesian = Cesium.Matrix4.multiplyByPoint(tileset.modelMatrix, bsCenter, new Cesium.Cartesian3());
+    const newCenterCarto = Cesium.Cartographic.fromCartesian(newCenterCartesian);
+    console.log("New tileset center (lon,lat,h):",
+      Cesium.Math.toDegrees(newCenterCarto.longitude).toFixed(6),
+      Cesium.Math.toDegrees(newCenterCarto.latitude).toFixed(6),
+      newCenterCarto.height.toFixed(3));
+
+    // -------------------------
+    // 5) Fly camera to tileset (nice offset)
+    // -------------------------
+    viewer.flyTo(tileset, { offset: new Cesium.HeadingPitchRange(0, -0.6, 450) });
+
+    // -------------------------
+    // 6) Add simple student features (food stalls)
+    // -------------------------
+    const foodStalls = [
+      { name: "Food Stall – Aula", lon: 28.2318, lat: -25.7547, hours: "Mon–Fri 10:00–16:00", acceptsDonations: true },
+      { name: "Food Stall – Merensky Library", lon: 28.2299, lat: -25.7542, hours: "Mon–Fri 11:00–15:00", acceptsDonations: true },
+      { name: "Donation Point – Geography", lon: 28.2296, lat: -25.7557, hours: "Mon–Fri 08:00–17:00", acceptsDonations: true }
+    ];
+    let foodEntities = [], foodLayerVisible = false;
+    const pinImg = "data:image/svg+xml;utf8," + encodeURIComponent(`<svg xmlns='http://www.w3.org/2000/svg' width='48' height='48' viewBox='0 0 24 24' fill='red'><path d='M12 2C8.14 2 5 5.14 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.86-3.14-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5S10.62 6.5 12 6.5s2.5 1.12 2.5 2.5S13.38 11.5 12 11.5z'/></svg>`);
+    function addFoodLayer() {
+      if (foodEntities.length) return;
+      for (const s of foodStalls) {
+        const e = viewer.entities.add({
+          position: Cesium.Cartesian3.fromDegrees(s.lon, s.lat, 1),
+          billboard: {
+            image: pinImg,
+            verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
+            heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+            scale: 0.8
+          },
+          label: {
+            text: s.name,
+            font: "12px Segoe UI",
+            pixelOffset: new Cesium.Cartesian2(0, -35),
+            disableDepthTestDistance: Number.POSITIVE_INFINITY
+          },
+          properties: s
+        });
+        foodEntities.push(e);
+      }
+    }
+    function removeFoodLayer() { for (const e of foodEntities) viewer.entities.remove(e); foodEntities=[]; }
+
+    document.getElementById("btnFood").onclick = () => { foodLayerVisible = !foodLayerVisible; foodLayerVisible ? addFoodLayer() : removeFoodLayer(); };
+
+    document.getElementById("btnNearest").onclick = () => {
+      if (!foodEntities.length) addFoodLayer();
+      const origin = Cesium.Cartographic.fromDegrees(targetLon, targetLat);
+      let best=null, bestDist=1e12;
+      for (const e of foodEntities) {
+        const c = Cesium.Cartographic.fromCartesian(e.position.getValue(Cesium.JulianDate.now()));
+        const dx = (c.longitude - origin.longitude) * 6378137 * Math.cos((origin.latitude + c.latitude)/2);
+        const dy = (c.latitude - origin.latitude) * 6378137;
+        const d = Math.hypot(dx, dy);
+        if (d < bestDist) { bestDist=d; best=e; }
+      }
+      if (best) {
+        viewer.flyTo(best, { duration: 1.2 });
+        const p = best.properties.getValue(Cesium.JulianDate.now());
+        const panel = document.getElementById("attrPanel");
+        panel.innerHTML = `<strong>${p.name}</strong><br/>Hours: ${p.hours}<br/>Donations: ${p.acceptsDonations ? "Yes" : "No"}<br/><em>≈ ${Math.round(bestDist)} m away</em>`;
+        panel.style.display = "block";
+      }
+    };
+
+    // Toggle tileset
+    document.getElementById("btnHide").onclick = () => { tileset.show = !tileset.show; };
+
+    // Zoom to campus button
+    document.getElementById("btnZoom").onclick = () => { viewer.flyTo(tileset, { offset: new Cesium.HeadingPitchRange(0, -0.6, 300) }); };
+
+    // Click handler: entities + tileset feature fallback
+    const handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
+    handler.setInputAction(function(click) {
+      const picked = viewer.scene.pick(click.position);
+      const panel = document.getElementById("attrPanel");
+      if (!Cesium.defined(picked)) { panel.style.display='none'; return; }
+
+      // entity pick (food pins etc)
+      if (Cesium.defined(picked.id) && picked.id.properties) {
+        const p = picked.id.properties.getValue(Cesium.JulianDate.now());
+        panel.innerHTML = `<strong>${p.name || picked.id.name}</strong><br/>${p.hours ? "Hours: "+p.hours+"<br/>":""}${p.acceptsDonations ? "Accepts donations":""}`;
+        panel.style.display = 'block';
+        return;
+      }
+
+      // Try tileset feature pick (3D Tiles)
+      if (picked && picked.getProperty) {
+        try {
+          const propName = picked.getProperty('name') || picked.getProperty('Name') || picked.getProperty('buildingName');
+          panel.innerHTML = `<strong>${propName || 'Tileset Feature'}</strong>`;
+          panel.style.display = 'block';
+          return;
+        } catch(e) { /* ignore */ }
+      }
+
+      panel.style.display='none';
+    }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+
+    console.log("Tileset and alignment process complete. Check logs above for current vs target coordinates.");
+  })();
+  </script>
+</body>
+</html>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>UP Hatfield 3D Campus — Fixed</title>
+
+  <script src="https://cesium.com/downloads/cesiumjs/releases/1.120/Build/Cesium/Cesium.js"></script>
+  <link href="https://cesium.com/downloads/cesiumjs/releases/1.120/Build/Cesium/Widgets/widgets.css" rel="stylesheet"/>
+
+  <style>
+    html, body, #cesiumContainer { width:100%; height:100%; margin:0; padding:0; background:#000; }
+    #appHeader { position:absolute; top:0; left:0; right:0; height:48px; background:rgba(25,25,25,0.9); color:#fff; display:flex; align-items:center; padding:0 10px; z-index:1000; }
+    #headerButtons button { margin-left:8px; background:#444; color:#fff; border:none; padding:6px 10px; border-radius:4px; cursor:pointer; }
+    #attrPanel { position:absolute; top:60px; right:10px; background:rgba(255,255,255,0.95); padding:10px; border-radius:6px; box-shadow:0 2px 6px rgba(0,0,0,0.3); min-width:240px; z-index:999; display:none; }
+  </style>
+</head>
+<body>
+  <header id="appHeader">
+    <div><strong>GMT320 — UP Hatfield 3D Campus</strong></div>
+    <div id="headerButtons" style="margin-left:auto;">
+      <button id="btnZoom">Zoom to Campus</button>
+      <button id="btnHide">Toggle Tileset</button>
+      <button id="btnFood">Toggle Food Sources</button>
+      <button id="btnNearest">Nearest Stall</button>
+    </div>
+  </header>
+
+  <div id="cesiumContainer"></div>
+  <div id="attrPanel"></div>
+
+  <script type="module">
+  (async function() {
+    // -------------------------
+    // 1) Token + viewer
+    // -------------------------
+    Cesium.Ion.defaultAccessToken = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiI2MTQ4MGQ4Zi01NDU1LTRmMzktYTAwYy01ZmUxOWRjNDA0ODAiLCJpZCI6MzU0ODMzLCJpYXQiOjE3NjE2NTg3NDN9.Zj6MCsc5o0OUgnMHODU2tU_DIkNAImCGbN-Kgb2Bmjs";
+
+    const viewer = new Cesium.Viewer("cesiumContainer", {
+      terrain: Cesium.Terrain.fromWorldTerrain(),
+      shadows: true,
+      timeline: false,
+      animation: false,
+      baseLayerPicker: true
+    });
+    viewer.scene.globe.enableLighting = true;
+    viewer.shadows = true;
+
+    // -------------------------
+    // 2) Target location (UP Hatfield)
+    // -------------------------
+    const targetLon = 28.2314;
+    const targetLat = -25.7550;
+    const targetHeight = 0; // set desired height (metres above ellipsoid). try 0 initially.
+
+    // Tile asset id (from your Ion). Confirm this is the correct ID for the uploaded tileset.
+    const ION_TILESET_ASSET_ID = 3976208;
+
+    // -------------------------
+    // 3) Load tileset (3D Tiles)
+    // -------------------------
+    let tileset;
+    try {
+      tileset = await Cesium.Cesium3DTileset.fromIonAssetId(ION_TILESET_ASSET_ID);
+      viewer.scene.primitives.add(tileset);
+      await tileset.readyPromise;
+    } catch (err) {
+      console.error("Tileset load error:", err);
+      alert("Failed to load tileset from Ion. Check console for details.");
+      return;
+    }
+
+    // -------------------------
+    // 4) Compute translation to desired lon/lat/height
+    //    We take the tileset boundingSphere center (in world Cartesian),
+    //    compute the Cartesian target position for desired lon/lat/height,
+    //    and translate the tileset by (target - currentCenter).
+    // -------------------------
+    const bsCenter = tileset.boundingSphere.center; // Cartesian3 in world coordinates
+    const bsCartographic = Cesium.Cartographic.fromCartesian(bsCenter);
+
+    const currentLonDeg  = Cesium.Math.toDegrees(bsCartographic.longitude);
+    const currentLatDeg  = Cesium.Math.toDegrees(bsCartographic.latitude);
+    const currentHeightM = bsCartographic.height;
+
+    console.log("Tileset boundingSphere center (lon, lat, h):",
+      currentLonDeg.toFixed(6), currentLatDeg.toFixed(6), currentHeightM.toFixed(3));
+
+    // Cartesian target for desired lon/lat/height
+    const targetCartesian = Cesium.Cartesian3.fromDegrees(targetLon, targetLat, targetHeight);
+
+    // Compute translation vector: target - currentCenter
+    const translation = new Cesium.Cartesian3();
+    Cesium.Cartesian3.subtract(targetCartesian, bsCenter, translation);
+
+    console.log("Translation vector (meters):", translation);
+
+    // Create a clone of existing modelMatrix (preserve rotation/scale)
+    const oldMatrix = tileset.modelMatrix ? Cesium.Matrix4.clone(tileset.modelMatrix) : Cesium.Matrix4.IDENTITY;
+    // Apply translation by multiplying with translation matrix
+    const translationMatrix = Cesium.Matrix4.fromTranslation(translation);
+    const newMatrix = Cesium.Matrix4.multiply(translationMatrix, oldMatrix, new Cesium.Matrix4());
+    tileset.modelMatrix = newMatrix;
+
+    // Log result: where the tileset center is now (should match target)
+    const newCenterCartesian = Cesium.Matrix4.multiplyByPoint(tileset.modelMatrix, bsCenter, new Cesium.Cartesian3());
+    const newCenterCarto = Cesium.Cartographic.fromCartesian(newCenterCartesian);
+    console.log("New tileset center (lon,lat,h):",
+      Cesium.Math.toDegrees(newCenterCarto.longitude).toFixed(6),
+      Cesium.Math.toDegrees(newCenterCarto.latitude).toFixed(6),
+      newCenterCarto.height.toFixed(3));
+
+    // -------------------------
+    // 5) Fly camera to tileset (nice offset)
+    // -------------------------
+    viewer.flyTo(tileset, { offset: new Cesium.HeadingPitchRange(0, -0.6, 450) });
+
+    // -------------------------
+    // 6) Add simple student features (food stalls)
+    // -------------------------
+    const foodStalls = [
+      { name: "Food Stall – Aula", lon: 28.2318, lat: -25.7547, hours: "Mon–Fri 10:00–16:00", acceptsDonations: true },
+      { name: "Food Stall – Merensky Library", lon: 28.2299, lat: -25.7542, hours: "Mon–Fri 11:00–15:00", acceptsDonations: true },
+      { name: "Donation Point – Geography", lon: 28.2296, lat: -25.7557, hours: "Mon–Fri 08:00–17:00", acceptsDonations: true }
+    ];
+    let foodEntities = [], foodLayerVisible = false;
+    const pinImg = "data:image/svg+xml;utf8," + encodeURIComponent(`<svg xmlns='http://www.w3.org/2000/svg' width='48' height='48' viewBox='0 0 24 24' fill='red'><path d='M12 2C8.14 2 5 5.14 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.86-3.14-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5S10.62 6.5 12 6.5s2.5 1.12 2.5 2.5S13.38 11.5 12 11.5z'/></svg>`);
+    function addFoodLayer() {
+      if (foodEntities.length) return;
+      for (const s of foodStalls) {
+        const e = viewer.entities.add({
+          position: Cesium.Cartesian3.fromDegrees(s.lon, s.lat, 1),
+          billboard: {
+            image: pinImg,
+            verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
+            heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+            scale: 0.8
+          },
+          label: {
+            text: s.name,
+            font: "12px Segoe UI",
+            pixelOffset: new Cesium.Cartesian2(0, -35),
+            disableDepthTestDistance: Number.POSITIVE_INFINITY
+          },
+          properties: s
+        });
+        foodEntities.push(e);
+      }
+    }
+    function removeFoodLayer() { for (const e of foodEntities) viewer.entities.remove(e); foodEntities=[]; }
+
+    document.getElementById("btnFood").onclick = () => { foodLayerVisible = !foodLayerVisible; foodLayerVisible ? addFoodLayer() : removeFoodLayer(); };
+
+    document.getElementById("btnNearest").onclick = () => {
+      if (!foodEntities.length) addFoodLayer();
+      const origin = Cesium.Cartographic.fromDegrees(targetLon, targetLat);
+      let best=null, bestDist=1e12;
+      for (const e of foodEntities) {
+        const c = Cesium.Cartographic.fromCartesian(e.position.getValue(Cesium.JulianDate.now()));
+        const dx = (c.longitude - origin.longitude) * 6378137 * Math.cos((origin.latitude + c.latitude)/2);
+        const dy = (c.latitude - origin.latitude) * 6378137;
+        const d = Math.hypot(dx, dy);
+        if (d < bestDist) { bestDist=d; best=e; }
+      }
+      if (best) {
+        viewer.flyTo(best, { duration: 1.2 });
+        const p = best.properties.getValue(Cesium.JulianDate.now());
+        const panel = document.getElementById("attrPanel");
+        panel.innerHTML = `<strong>${p.name}</strong><br/>Hours: ${p.hours}<br/>Donations: ${p.acceptsDonations ? "Yes" : "No"}<br/><em>≈ ${Math.round(bestDist)} m away</em>`;
+        panel.style.display = "block";
+      }
+    };
+
+    // Toggle tileset
+    document.getElementById("btnHide").onclick = () => { tileset.show = !tileset.show; };
+
+    // Zoom to campus button
+    document.getElementById("btnZoom").onclick = () => { viewer.flyTo(tileset, { offset: new Cesium.HeadingPitchRange(0, -0.6, 300) }); };
+
+    // Click handler: entities + tileset feature fallback
+    const handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
+    handler.setInputAction(function(click) {
+      const picked = viewer.scene.pick(click.position);
+      const panel = document.getElementById("attrPanel");
+      if (!Cesium.defined(picked)) { panel.style.display='none'; return; }
+
+      // entity pick (food pins etc)
+      if (Cesium.defined(picked.id) && picked.id.properties) {
+        const p = picked.id.properties.getValue(Cesium.JulianDate.now());
+        panel.innerHTML = `<strong>${p.name || picked.id.name}</strong><br/>${p.hours ? "Hours: "+p.hours+"<br/>":""}${p.acceptsDonations ? "Accepts donations":""}`;
+        panel.style.display = 'block';
+        return;
+      }
+
+      // Try tileset feature pick (3D Tiles)
+      if (picked && picked.getProperty) {
+        try {
+          const propName = picked.getProperty('name') || picked.getProperty('Name') || picked.getProperty('buildingName');
+          panel.innerHTML = `<strong>${propName || 'Tileset Feature'}</strong>`;
+          panel.style.display = 'block';
+          return;
+        } catch(e) { /* ignore */ }
+      }
+
+      panel.style.display='none';
+    }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+
+    console.log("Tileset and alignment process complete. Check logs above for current vs target coordinates.");
+  })();
+  </script>
+</body>
+</html>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>UP Hatfield 3D Campus — Fixed</title>
+
+  <script src="https://cesium.com/downloads/cesiumjs/releases/1.120/Build/Cesium/Cesium.js"></script>
+  <link href="https://cesium.com/downloads/cesiumjs/releases/1.120/Build/Cesium/Widgets/widgets.css" rel="stylesheet"/>
+
+  <style>
+    html, body, #cesiumContainer { width:100%; height:100%; margin:0; padding:0; background:#000; }
+    #appHeader { position:absolute; top:0; left:0; right:0; height:48px; background:rgba(25,25,25,0.9); color:#fff; display:flex; align-items:center; padding:0 10px; z-index:1000; }
+    #headerButtons button { margin-left:8px; background:#444; color:#fff; border:none; padding:6px 10px; border-radius:4px; cursor:pointer; }
+    #attrPanel { position:absolute; top:60px; right:10px; background:rgba(255,255,255,0.95); padding:10px; border-radius:6px; box-shadow:0 2px 6px rgba(0,0,0,0.3); min-width:240px; z-index:999; display:none; }
+  </style>
+</head>
+<body>
+  <header id="appHeader">
+    <div><strong>GMT320 — UP Hatfield 3D Campus</strong></div>
+    <div id="headerButtons" style="margin-left:auto;">
+      <button id="btnZoom">Zoom to Campus</button>
+      <button id="btnHide">Toggle Tileset</button>
+      <button id="btnFood">Toggle Food Sources</button>
+      <button id="btnNearest">Nearest Stall</button>
+    </div>
+  </header>
+
+  <div id="cesiumContainer"></div>
+  <div id="attrPanel"></div>
+
+  <script type="module">
+  (async function() {
+    // -------------------------
+    // 1) Token + viewer
+    // -------------------------
+    Cesium.Ion.defaultAccessToken = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiI2MTQ4MGQ4Zi01NDU1LTRmMzktYTAwYy01ZmUxOWRjNDA0ODAiLCJpZCI6MzU0ODMzLCJpYXQiOjE3NjE2NTg3NDN9.Zj6MCsc5o0OUgnMHODU2tU_DIkNAImCGbN-Kgb2Bmjs";
+
+    const viewer = new Cesium.Viewer("cesiumContainer", {
+      terrain: Cesium.Terrain.fromWorldTerrain(),
+      shadows: true,
+      timeline: false,
+      animation: false,
+      baseLayerPicker: true
+    });
+    viewer.scene.globe.enableLighting = true;
+    viewer.shadows = true;
+
+    // -------------------------
+    // 2) Target location (UP Hatfield)
+    // -------------------------
+    const targetLon = 28.2314;
+    const targetLat = -25.7550;
+    const targetHeight = 0; // set desired height (metres above ellipsoid). try 0 initially.
+
+    // Tile asset id (from your Ion). Confirm this is the correct ID for the uploaded tileset.
+    const ION_TILESET_ASSET_ID = 3976208;
+
+    // -------------------------
+    // 3) Load tileset (3D Tiles)
+    // -------------------------
+    let tileset;
+    try {
+      tileset = await Cesium.Cesium3DTileset.fromIonAssetId(ION_TILESET_ASSET_ID);
+      viewer.scene.primitives.add(tileset);
+      await tileset.readyPromise;
+    } catch (err) {
+      console.error("Tileset load error:", err);
+      alert("Failed to load tileset from Ion. Check console for details.");
+      return;
+    }
+
+    // -------------------------
+    // 4) Compute translation to desired lon/lat/height
+    //    We take the tileset boundingSphere center (in world Cartesian),
+    //    compute the Cartesian target position for desired lon/lat/height,
+    //    and translate the tileset by (target - currentCenter).
+    // -------------------------
+    const bsCenter = tileset.boundingSphere.center; // Cartesian3 in world coordinates
+    const bsCartographic = Cesium.Cartographic.fromCartesian(bsCenter);
+
+    const currentLonDeg  = Cesium.Math.toDegrees(bsCartographic.longitude);
+    const currentLatDeg  = Cesium.Math.toDegrees(bsCartographic.latitude);
+    const currentHeightM = bsCartographic.height;
+
+    console.log("Tileset boundingSphere center (lon, lat, h):",
+      currentLonDeg.toFixed(6), currentLatDeg.toFixed(6), currentHeightM.toFixed(3));
+
+    // Cartesian target for desired lon/lat/height
+    const targetCartesian = Cesium.Cartesian3.fromDegrees(targetLon, targetLat, targetHeight);
+
+    // Compute translation vector: target - currentCenter
+    const translation = new Cesium.Cartesian3();
+    Cesium.Cartesian3.subtract(targetCartesian, bsCenter, translation);
+
+    console.log("Translation vector (meters):", translation);
+
+    // Create a clone of existing modelMatrix (preserve rotation/scale)
+    const oldMatrix = tileset.modelMatrix ? Cesium.Matrix4.clone(tileset.modelMatrix) : Cesium.Matrix4.IDENTITY;
+    // Apply translation by multiplying with translation matrix
+    const translationMatrix = Cesium.Matrix4.fromTranslation(translation);
+    const newMatrix = Cesium.Matrix4.multiply(translationMatrix, oldMatrix, new Cesium.Matrix4());
+    tileset.modelMatrix = newMatrix;
+
+    // Log result: where the tileset center is now (should match target)
+    const newCenterCartesian = Cesium.Matrix4.multiplyByPoint(tileset.modelMatrix, bsCenter, new Cesium.Cartesian3());
+    const newCenterCarto = Cesium.Cartographic.fromCartesian(newCenterCartesian);
+    console.log("New tileset center (lon,lat,h):",
+      Cesium.Math.toDegrees(newCenterCarto.longitude).toFixed(6),
+      Cesium.Math.toDegrees(newCenterCarto.latitude).toFixed(6),
+      newCenterCarto.height.toFixed(3));
+
+    // -------------------------
+    // 5) Fly camera to tileset (nice offset)
+    // -------------------------
+    viewer.flyTo(tileset, { offset: new Cesium.HeadingPitchRange(0, -0.6, 450) });
+
+    // -------------------------
+    // 6) Add simple student features (food stalls)
+    // -------------------------
+    const foodStalls = [
+      { name: "Food Stall – Aula", lon: 28.2318, lat: -25.7547, hours: "Mon–Fri 10:00–16:00", acceptsDonations: true },
+      { name: "Food Stall – Merensky Library", lon: 28.2299, lat: -25.7542, hours: "Mon–Fri 11:00–15:00", acceptsDonations: true },
+      { name: "Donation Point – Geography", lon: 28.2296, lat: -25.7557, hours: "Mon–Fri 08:00–17:00", acceptsDonations: true }
+    ];
+    let foodEntities = [], foodLayerVisible = false;
+    const pinImg = "data:image/svg+xml;utf8," + encodeURIComponent(`<svg xmlns='http://www.w3.org/2000/svg' width='48' height='48' viewBox='0 0 24 24' fill='red'><path d='M12 2C8.14 2 5 5.14 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.86-3.14-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5S10.62 6.5 12 6.5s2.5 1.12 2.5 2.5S13.38 11.5 12 11.5z'/></svg>`);
+    function addFoodLayer() {
+      if (foodEntities.length) return;
+      for (const s of foodStalls) {
+        const e = viewer.entities.add({
+          position: Cesium.Cartesian3.fromDegrees(s.lon, s.lat, 1),
+          billboard: {
+            image: pinImg,
+            verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
+            heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+            scale: 0.8
+          },
+          label: {
+            text: s.name,
+            font: "12px Segoe UI",
+            pixelOffset: new Cesium.Cartesian2(0, -35),
+            disableDepthTestDistance: Number.POSITIVE_INFINITY
+          },
+          properties: s
+        });
+        foodEntities.push(e);
+      }
+    }
+    function removeFoodLayer() { for (const e of foodEntities) viewer.entities.remove(e); foodEntities=[]; }
+
+    document.getElementById("btnFood").onclick = () => { foodLayerVisible = !foodLayerVisible; foodLayerVisible ? addFoodLayer() : removeFoodLayer(); };
+
+    document.getElementById("btnNearest").onclick = () => {
+      if (!foodEntities.length) addFoodLayer();
+      const origin = Cesium.Cartographic.fromDegrees(targetLon, targetLat);
+      let best=null, bestDist=1e12;
+      for (const e of foodEntities) {
+        const c = Cesium.Cartographic.fromCartesian(e.position.getValue(Cesium.JulianDate.now()));
+        const dx = (c.longitude - origin.longitude) * 6378137 * Math.cos((origin.latitude + c.latitude)/2);
+        const dy = (c.latitude - origin.latitude) * 6378137;
+        const d = Math.hypot(dx, dy);
+        if (d < bestDist) { bestDist=d; best=e; }
+      }
+      if (best) {
+        viewer.flyTo(best, { duration: 1.2 });
+        const p = best.properties.getValue(Cesium.JulianDate.now());
+        const panel = document.getElementById("attrPanel");
+        panel.innerHTML = `<strong>${p.name}</strong><br/>Hours: ${p.hours}<br/>Donations: ${p.acceptsDonations ? "Yes" : "No"}<br/><em>≈ ${Math.round(bestDist)} m away</em>`;
+        panel.style.display = "block";
+      }
+    };
+
+    // Toggle tileset
+    document.getElementById("btnHide").onclick = () => { tileset.show = !tileset.show; };
+
+    // Zoom to campus button
+    document.getElementById("btnZoom").onclick = () => { viewer.flyTo(tileset, { offset: new Cesium.HeadingPitchRange(0, -0.6, 300) }); };
+
+    // Click handler: entities + tileset feature fallback
+    const handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
+    handler.setInputAction(function(click) {
+      const picked = viewer.scene.pick(click.position);
+      const panel = document.getElementById("attrPanel");
+      if (!Cesium.defined(picked)) { panel.style.display='none'; return; }
+
+      // entity pick (food pins etc)
+      if (Cesium.defined(picked.id) && picked.id.properties) {
+        const p = picked.id.properties.getValue(Cesium.JulianDate.now());
+        panel.innerHTML = `<strong>${p.name || picked.id.name}</strong><br/>${p.hours ? "Hours: "+p.hours+"<br/>":""}${p.acceptsDonations ? "Accepts donations":""}`;
+        panel.style.display = 'block';
+        return;
+      }
+
+      // Try tileset feature pick (3D Tiles)
+      if (picked && picked.getProperty) {
+        try {
+          const propName = picked.getProperty('name') || picked.getProperty('Name') || picked.getProperty('buildingName');
+          panel.innerHTML = `<strong>${propName || 'Tileset Feature'}</strong>`;
+          panel.style.display = 'block';
+          return;
+        } catch(e) { /* ignore */ }
+      }
+
+      panel.style.display='none';
+    }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+
+    console.log("Tileset and alignment process complete. Check logs above for current vs target coordinates.");
+  })();
+  </script>
+</body>
+</html>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>UP Hatfield 3D Campus — Fixed</title>
+
+  <script src="https://cesium.com/downloads/cesiumjs/releases/1.120/Build/Cesium/Cesium.js"></script>
+  <link href="https://cesium.com/downloads/cesiumjs/releases/1.120/Build/Cesium/Widgets/widgets.css" rel="stylesheet"/>
+
+  <style>
+    html, body, #cesiumContainer { width:100%; height:100%; margin:0; padding:0; background:#000; }
+    #appHeader { position:absolute; top:0; left:0; right:0; height:48px; background:rgba(25,25,25,0.9); color:#fff; display:flex; align-items:center; padding:0 10px; z-index:1000; }
+    #headerButtons button { margin-left:8px; background:#444; color:#fff; border:none; padding:6px 10px; border-radius:4px; cursor:pointer; }
+    #attrPanel { position:absolute; top:60px; right:10px; background:rgba(255,255,255,0.95); padding:10px; border-radius:6px; box-shadow:0 2px 6px rgba(0,0,0,0.3); min-width:240px; z-index:999; display:none; }
+  </style>
+</head>
+<body>
+  <header id="appHeader">
+    <div><strong>GMT320 — UP Hatfield 3D Campus</strong></div>
+    <div id="headerButtons" style="margin-left:auto;">
+      <button id="btnZoom">Zoom to Campus</button>
+      <button id="btnHide">Toggle Tileset</button>
+      <button id="btnFood">Toggle Food Sources</button>
+      <button id="btnNearest">Nearest Stall</button>
+    </div>
+  </header>
+
+  <div id="cesiumContainer"></div>
+  <div id="attrPanel"></div>
+
+  <script type="module">
+  (async function() {
+    // -------------------------
+    // 1) Token + viewer
+    // -------------------------
+    Cesium.Ion.defaultAccessToken = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiI2MTQ4MGQ4Zi01NDU1LTRmMzktYTAwYy01ZmUxOWRjNDA0ODAiLCJpZCI6MzU0ODMzLCJpYXQiOjE3NjE2NTg3NDN9.Zj6MCsc5o0OUgnMHODU2tU_DIkNAImCGbN-Kgb2Bmjs";
+
+    const viewer = new Cesium.Viewer("cesiumContainer", {
+      terrain: Cesium.Terrain.fromWorldTerrain(),
+      shadows: true,
+      timeline: false,
+      animation: false,
+      baseLayerPicker: true
+    });
+    viewer.scene.globe.enableLighting = true;
+    viewer.shadows = true;
+
+    // -------------------------
+    // 2) Target location (UP Hatfield)
+    // -------------------------
+    const targetLon = 28.2314;
+    const targetLat = -25.7550;
+    const targetHeight = 0; // set desired height (metres above ellipsoid). try 0 initially.
+
+    // Tile asset id (from your Ion). Confirm this is the correct ID for the uploaded tileset.
+    const ION_TILESET_ASSET_ID = 3976208;
+
+    // -------------------------
+    // 3) Load tileset (3D Tiles)
+    // -------------------------
+    let tileset;
+    try {
+      tileset = await Cesium.Cesium3DTileset.fromIonAssetId(ION_TILESET_ASSET_ID);
+      viewer.scene.primitives.add(tileset);
+      await tileset.readyPromise;
+    } catch (err) {
+      console.error("Tileset load error:", err);
+      alert("Failed to load tileset from Ion. Check console for details.");
+      return;
+    }
+
+    // -------------------------
+    // 4) Compute translation to desired lon/lat/height
+    //    We take the tileset boundingSphere center (in world Cartesian),
+    //    compute the Cartesian target position for desired lon/lat/height,
+    //    and translate the tileset by (target - currentCenter).
+    // -------------------------
+    const bsCenter = tileset.boundingSphere.center; // Cartesian3 in world coordinates
+    const bsCartographic = Cesium.Cartographic.fromCartesian(bsCenter);
+
+    const currentLonDeg  = Cesium.Math.toDegrees(bsCartographic.longitude);
+    const currentLatDeg  = Cesium.Math.toDegrees(bsCartographic.latitude);
+    const currentHeightM = bsCartographic.height;
+
+    console.log("Tileset boundingSphere center (lon, lat, h):",
+      currentLonDeg.toFixed(6), currentLatDeg.toFixed(6), currentHeightM.toFixed(3));
+
+    // Cartesian target for desired lon/lat/height
+    const targetCartesian = Cesium.Cartesian3.fromDegrees(targetLon, targetLat, targetHeight);
+
+    // Compute translation vector: target - currentCenter
+    const translation = new Cesium.Cartesian3();
+    Cesium.Cartesian3.subtract(targetCartesian, bsCenter, translation);
+
+    console.log("Translation vector (meters):", translation);
+
+    // Create a clone of existing modelMatrix (preserve rotation/scale)
+    const oldMatrix = tileset.modelMatrix ? Cesium.Matrix4.clone(tileset.modelMatrix) : Cesium.Matrix4.IDENTITY;
+    // Apply translation by multiplying with translation matrix
+    const translationMatrix = Cesium.Matrix4.fromTranslation(translation);
+    const newMatrix = Cesium.Matrix4.multiply(translationMatrix, oldMatrix, new Cesium.Matrix4());
+    tileset.modelMatrix = newMatrix;
+
+    // Log result: where the tileset center is now (should match target)
+    const newCenterCartesian = Cesium.Matrix4.multiplyByPoint(tileset.modelMatrix, bsCenter, new Cesium.Cartesian3());
+    const newCenterCarto = Cesium.Cartographic.fromCartesian(newCenterCartesian);
+    console.log("New tileset center (lon,lat,h):",
+      Cesium.Math.toDegrees(newCenterCarto.longitude).toFixed(6),
+      Cesium.Math.toDegrees(newCenterCarto.latitude).toFixed(6),
+      newCenterCarto.height.toFixed(3));
+
+    // -------------------------
+    // 5) Fly camera to tileset (nice offset)
+    // -------------------------
+    viewer.flyTo(tileset, { offset: new Cesium.HeadingPitchRange(0, -0.6, 450) });
+
+    // -------------------------
+    // 6) Add simple student features (food stalls)
+    // -------------------------
+    const foodStalls = [
+      { name: "Food Stall – Aula", lon: 28.2318, lat: -25.7547, hours: "Mon–Fri 10:00–16:00", acceptsDonations: true },
+      { name: "Food Stall – Merensky Library", lon: 28.2299, lat: -25.7542, hours: "Mon–Fri 11:00–15:00", acceptsDonations: true },
+      { name: "Donation Point – Geography", lon: 28.2296, lat: -25.7557, hours: "Mon–Fri 08:00–17:00", acceptsDonations: true }
+    ];
+    let foodEntities = [], foodLayerVisible = false;
+    const pinImg = "data:image/svg+xml;utf8," + encodeURIComponent(`<svg xmlns='http://www.w3.org/2000/svg' width='48' height='48' viewBox='0 0 24 24' fill='red'><path d='M12 2C8.14 2 5 5.14 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.86-3.14-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5S10.62 6.5 12 6.5s2.5 1.12 2.5 2.5S13.38 11.5 12 11.5z'/></svg>`);
+    function addFoodLayer() {
+      if (foodEntities.length) return;
+      for (const s of foodStalls) {
+        const e = viewer.entities.add({
+          position: Cesium.Cartesian3.fromDegrees(s.lon, s.lat, 1),
+          billboard: {
+            image: pinImg,
+            verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
+            heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+            scale: 0.8
+          },
+          label: {
+            text: s.name,
+            font: "12px Segoe UI",
+            pixelOffset: new Cesium.Cartesian2(0, -35),
+            disableDepthTestDistance: Number.POSITIVE_INFINITY
+          },
+          properties: s
+        });
+        foodEntities.push(e);
+      }
+    }
+    function removeFoodLayer() { for (const e of foodEntities) viewer.entities.remove(e); foodEntities=[]; }
+
+    document.getElementById("btnFood").onclick = () => { foodLayerVisible = !foodLayerVisible; foodLayerVisible ? addFoodLayer() : removeFoodLayer(); };
+
+    document.getElementById("btnNearest").onclick = () => {
+      if (!foodEntities.length) addFoodLayer();
+      const origin = Cesium.Cartographic.fromDegrees(targetLon, targetLat);
+      let best=null, bestDist=1e12;
+      for (const e of foodEntities) {
+        const c = Cesium.Cartographic.fromCartesian(e.position.getValue(Cesium.JulianDate.now()));
+        const dx = (c.longitude - origin.longitude) * 6378137 * Math.cos((origin.latitude + c.latitude)/2);
+        const dy = (c.latitude - origin.latitude) * 6378137;
+        const d = Math.hypot(dx, dy);
+        if (d < bestDist) { bestDist=d; best=e; }
+      }
+      if (best) {
+        viewer.flyTo(best, { duration: 1.2 });
+        const p = best.properties.getValue(Cesium.JulianDate.now());
+        const panel = document.getElementById("attrPanel");
+        panel.innerHTML = `<strong>${p.name}</strong><br/>Hours: ${p.hours}<br/>Donations: ${p.acceptsDonations ? "Yes" : "No"}<br/><em>≈ ${Math.round(bestDist)} m away</em>`;
+        panel.style.display = "block";
+      }
+    };
+
+    // Toggle tileset
+    document.getElementById("btnHide").onclick = () => { tileset.show = !tileset.show; };
+
+    // Zoom to campus button
+    document.getElementById("btnZoom").onclick = () => { viewer.flyTo(tileset, { offset: new Cesium.HeadingPitchRange(0, -0.6, 300) }); };
+
+    // Click handler: entities + tileset feature fallback
+    const handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
+    handler.setInputAction(function(click) {
+      const picked = viewer.scene.pick(click.position);
+      const panel = document.getElementById("attrPanel");
+      if (!Cesium.defined(picked)) { panel.style.display='none'; return; }
+
+      // entity pick (food pins etc)
+      if (Cesium.defined(picked.id) && picked.id.properties) {
+        const p = picked.id.properties.getValue(Cesium.JulianDate.now());
+        panel.innerHTML = `<strong>${p.name || picked.id.name}</strong><br/>${p.hours ? "Hours: "+p.hours+"<br/>":""}${p.acceptsDonations ? "Accepts donations":""}`;
+        panel.style.display = 'block';
+        return;
+      }
+
+      // Try tileset feature pick (3D Tiles)
+      if (picked && picked.getProperty) {
+        try {
+          const propName = picked.getProperty('name') || picked.getProperty('Name') || picked.getProperty('buildingName');
+          panel.innerHTML = `<strong>${propName || 'Tileset Feature'}</strong>`;
+          panel.style.display = 'block';
+          return;
+        } catch(e) { /* ignore */ }
+      }
+
+      panel.style.display='none';
+    }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+
+    console.log("Tileset and alignment process complete. Check logs above for current vs target coordinates.");
+  })();
+  </script>
+</body>
+</html>
